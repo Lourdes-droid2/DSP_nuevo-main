@@ -1,54 +1,67 @@
 import numpy as np
 
-C = 343  # Velocidad del sonido en m/s
+C_SOUND_DEFAULT = 343.0  # Velocidad del sonido en m/s por defecto
 
-def estimate_doa_from_tdoa(tdoa, d=0.1, c=C):
+def estimate_doa_from_tdoa(tdoa, d, c=C_SOUND_DEFAULT):
     """
-    Estima el ángulo de llegada (DOA) en grados a partir del TDOA entre un par de micrófonos.
-    Asume un modelo de campo lejano y que el TDOA ya ha sido calculado.
-    El ángulo se calcula con respecto a la normal del eje del par de micrófonos.
-    Si los micrófonos están en el eje x, arccos(c*tdoa/d) da el ángulo con el eje x.
-    La interpretación del ángulo (azimut, elevación) depende de la orientación del par.
-    Para un par en el eje x, este sería el ángulo con el eje x (o su complemento con el eje y).
-    La descripción original decía "ángulo de elevación ... array lineal sobre eje x",
-    interpretaremos theta_rad como el ángulo con la normal (broadside) del array.
-    Si d es la separación, y theta es el ángulo con la normal, entonces path_diff = d * sin(theta).
-    tdoa = path_diff / c = d * sin(theta) / c.
-    sin(theta) = tdoa * c / d.
-    theta = arcsin(tdoa * c / d).
-
-    Si la fórmula original usaba arccos, implica que theta era el ángulo con el eje del array.
-    cos(theta_axis) = tdoa * c / d.
-    Vamos a seguir la fórmula original proporcionada por el usuario (con arccos),
-    asumiendo que 'theta_rad' es el ángulo con el eje del par de micrófonos.
+    Estima el Ángulo de Llegada (DOA) en grados a partir del TDOA entre un par de micrófonos.
+    El ángulo (phi) se calcula con respecto a la NORMAL (broadside) del eje del par de micrófonos.
+    Rango: -90 a +90 grados.
 
     Parameters:
     tdoa (float): Diferencia de tiempo de llegada en segundos.
-    d (float): Distancia entre los dos micrófonos en metros (por defecto 0.1m).
-    c (float): Velocidad del sonido en m/s (por defecto usa la constante C).
+    d (float): Distancia entre los dos micrófonos en metros.
+    c (float): Velocidad del sonido en m/s.
 
     Returns:
     float: Ángulo estimado en grados.
     """
-    val = tdoa * c / d
+    if np.isnan(tdoa) or np.isinf(tdoa):
+        return np.nan # Si TDOA no es válido, DOA tampoco
+    if d <= 0:
+        # print("Advertencia (estimate_doa_from_tdoa): Distancia 'd' debe ser positiva.")
+        return np.nan
 
-    # Control de dominio para np.arccos, que debe estar en [-1, 1]
-    # Si val está fuera de este rango, significa que el TDOA medido es físicamente imposible
-    # para la distancia 'd' dada, o hay mucho ruido.
-    if not (-1.0 <= val <= 1.0):
-        # print(f"ADVERTENCIA: Valor para arccos ({val:.4f}) fuera del rango [-1, 1]. TDOA={tdoa:.2e}s, d={d}m. Puede indicar TDOA no físico.")
-        # Se podría devolver NaN, un valor por defecto, o clampear. Clampeamos para obtener un ángulo.
-        pass # Se clampeará abajo con np.clip
+    val = (c * tdoa) / d
+    # np.clip asegura que val esté dentro de [-1, 1] antes de np.arcsin
+    val_clipped = np.clip(val, -1.0, 1.0)
+    
+    phi_rad = np.arcsin(val_clipped)
+    return np.degrees(phi_rad)
 
-    val = np.clip(val, -1.0, 1.0)
+# Ejemplos de prueba (pueden ejecutarse si el archivo se corre directamente)
+if __name__ == '__main__':
+    print("--- Pruebas para doa.py ---")
+    test_d = 0.1 # 10 cm
 
-    theta_rad = np.arccos(val)    # Ángulo con el eje del par de micrófonos, en radianes.
-                                  # Si tdoa es positivo, la señal llega primero al mic de referencia (implícito en el cálculo del tdoa).
-                                  # Si el par está en el eje x, mic1 en origen, mic2 en (d,0),
-                                  # y tdoa = t_mic1 - t_mic2.
-                                  # Si tdoa > 0, llega antes a mic2. Si tdoa < 0, llega antes a mic1.
-                                  # Un ángulo de 0 rad (0 deg) significa que la fuente está en la dirección del vector mic1->mic2.
-                                  # Un ángulo de pi rad (180 deg) significa dirección opuesta.
-                                  # Un ángulo de pi/2 rad (90 deg) significa que está en la perpendicular (broadside).
+    # Caso 1: Fuente a +30 grados
+    angle_deg_test1 = 30.0
+    tdoa_val_1 = (test_d * np.sin(np.deg2rad(angle_deg_test1))) / C_SOUND_DEFAULT
+    doa1 = estimate_doa_from_tdoa(tdoa_val_1, d=test_d)
+    print(f"Test 1 (Fuente a {angle_deg_test1:.1f} deg): TDOA={tdoa_val_1*1e6:.2f} us -> DOA={doa1:.2f} deg")
 
-    return np.degrees(theta_rad)
+    # Caso 2: Fuente a -45 grados
+    angle_deg_test2 = -45.0
+    tdoa_val_2 = (test_d * np.sin(np.deg2rad(angle_deg_test2))) / C_SOUND_DEFAULT
+    doa2 = estimate_doa_from_tdoa(tdoa_val_2, d=test_d)
+    print(f"Test 2 (Fuente a {angle_deg_test2:.1f} deg): TDOA={tdoa_val_2*1e6:.2f} us -> DOA={doa2:.2f} deg")
+
+    # Caso 3: Broadside (0 grados)
+    tdoa_val_3 = 0.0
+    doa3 = estimate_doa_from_tdoa(tdoa_val_3, d=test_d)
+    print(f"Test 3 (Fuente a 0 deg): TDOA={tdoa_val_3*1e6:.2f} us -> DOA={doa3:.2f} deg")
+
+    # Caso 4: Endfire (+90 grados)
+    tdoa_val_4 = test_d / C_SOUND_DEFAULT 
+    doa4 = estimate_doa_from_tdoa(tdoa_val_4, d=test_d)
+    print(f"Test 4 (Fuente a +90 deg): TDOA={tdoa_val_4*1e6:.2f} us -> DOA={doa4:.2f} deg")
+
+    # Caso 5: TDOA imposible (resulta en +90 por clip)
+    tdoa_val_5 = (test_d * 1.5) / C_SOUND_DEFAULT 
+    doa5 = estimate_doa_from_tdoa(tdoa_val_5, d=test_d)
+    print(f"Test 5 (TDOA imposible > d/c): TDOA={tdoa_val_5*1e6:.2f} us -> DOA={doa5:.2f} deg")
+    
+    # Caso 6: TDOA NaN
+    tdoa_val_6 = np.nan
+    doa6 = estimate_doa_from_tdoa(tdoa_val_6, d=test_d)
+    print(f"Test 6 (TDOA NaN): DOA={doa6}")

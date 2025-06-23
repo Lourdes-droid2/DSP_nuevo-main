@@ -1,0 +1,2 @@
+config_id,fs_hz,room_dim_x,room_dim_y,room_dim_z,rt60_target_s,is_anechoic,source_pos_x,source_pos_y,source_pos_z,array_center_x,array_center_y,array_center_z,actual_dist_src_to_array_center_m,actual_azimuth_src_to_array_center_deg,num_mics_in_array,mic_separation_m,rir_file_basename,mic0_pos_x,mic0_pos_y,mic0_pos_z,mic1_pos_x,mic1_pos_y,mic1_pos_z
+dummy_cfg1,48000,5,4,3,0.5,False,1,1,1.5,2.5,2,1.5,2.0,45.0,2,0.1,dummy_rir_cfg1,2.45,2,1.5,2.55,2,1.5

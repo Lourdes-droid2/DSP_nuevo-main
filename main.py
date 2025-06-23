@@ -1,157 +1,223 @@
 import os
 import numpy as np
-import soundfile as sf # Para load_rirs
-
-# Importar funciones de los módulos actualizados
+import soundfile as sf
+import pandas as pd
+import time
+# Asumiendo que los siguientes archivos están en el mismo directorio o en PYTHONPATH
+from load_signal import load_signal_from_wav
 from tdoa import estimate_tdoa_cc, estimate_tdoa_gcc
-from doa import estimate_doa_from_tdoa, C # Importar C si se va a usar directamente aquí
+from doa import estimate_doa_from_tdoa
 
-# Nota: La constante C también está definida en doa.py y es usada por defecto
-# por estimate_doa_from_tdoa. No es estrictamente necesario redefinirla aquí
-# a menos que se quiera usar explícitamente en main.py para otros cálculos.
-# Por consistencia, podemos quitar la redefinición de C = 343 aquí si doa.py ya la tiene.
+# --- Constantes y Configuraciones Globales ---
+RIR_DATASET_DIR = "rir_dataset_user_defined"
+METADATA_FILENAME = os.path.join(RIR_DATASET_DIR, "simulation_metadata.csv")
+ANECHOIC_SIGNAL_PATH = "p336_007.wav" # Asegúrate que este archivo exista y sea accesible
+SNRS_TO_TEST_DB = [-5, 0, 5, 10, 15, 20, 25, 30]
+C_SOUND = 343.0
 
-def load_rirs(base_filepath_template, num_mics, config_suffix=""):
-    """
-    Carga las RIRs generadas por simulation.py desde archivos .wav.
-    El base_filepath_template es el nombre del archivo SIN el _micidx_TAG.
-    Ejemplo: "rir_dataset_user_defined/rir_rt60_0.5_room_6x5x3.0_src_1x1x1.5_config_3.wav"
-    donde "_config_3" es el config_suffix si se usa.
-    La función quitará la extensión .wav, y luego añadirá _micidx_ y la extensión.
-    """
-    rirs = []
-    fs_rir = -1  # Para almacenar la frecuencia de muestreo, asumimos que todas las RIRs la comparten
+def calculate_real_tdoa(source_pos, mic_a_pos, mic_b_pos, c=C_SOUND):
+    """Calcula TDOA real basado en geometría."""
+    dist_source_mic_a = np.linalg.norm(np.array(source_pos) - np.array(mic_a_pos))
+    dist_source_mic_b = np.linalg.norm(np.array(source_pos) - np.array(mic_b_pos))
+    # TDOA = (tiempo_mic_A - tiempo_mic_B)
+    # Si señal llega antes a A, dist_source_mic_a es menor, tdoa es negativo.
+    # Esto depende de la convención de los algoritmos TDOA. 
+    # Por ahora: (dist_B - dist_A) / c para que sea positivo si B está más lejos.
+    # Ajustar según la convención de tdoa_estimate (sig1 vs sig2)
+    # Si tdoa_estimate es t1-t2, y mic_A es sig1, mic_B es sig2:
+    # tdoa_real = (dist_source_mic_a / c) - (dist_source_mic_b / c)
+    tdoa_real = (dist_source_mic_a - dist_source_mic_b) / c
+    return tdoa_real
 
-    # Quitar la extensión .wav del template para construir nombres base correctos
-    base_name_no_ext, _ = os.path.splitext(base_filepath_template)
+def add_noise_for_snr(signal, target_snr_db, fs, signal_power=None):
+    """Añade ruido AWGN a una señal para un SNR objetivo."""
+    if signal_power is None:
+        signal_power = np.mean(signal**2)
+    if signal_power == 0: # Señal es silencio
+        return signal # No se puede añadir ruido basado en SNR a una señal de potencia cero
+    
+    snr_linear = 10**(target_snr_db / 10.0)
+    noise_power_target = signal_power / snr_linear
+    
+    # Generar ruido blanco gaussiano
+    noise = np.random.normal(0, 1, len(signal))
+    current_noise_power = np.mean(noise**2)
+    if current_noise_power == 0: current_noise_power = 1e-10 # Evitar división por cero
+        
+    scaled_noise = noise * np.sqrt(noise_power_target / current_noise_power)
+    return signal + scaled_noise
 
-    for idx in range(num_mics):
-        # Construir el nombre de archivo específico para cada RIR de micrófono
-        rir_filename = f"{base_name_no_ext}_micidx_{idx}.wav"
-
-        if os.path.exists(rir_filename):
-            try:
-                rir_signal, current_fs = sf.read(rir_filename)
-                rirs.append(rir_signal)
-                if fs_rir == -1:
-                    fs_rir = current_fs
-                elif fs_rir != current_fs:
-                    print(f"ADVERTENCIA: Frecuencias de muestreo inconsistentes entre RIRs! {rir_filename} tiene {current_fs} Hz, se esperaba {fs_rir} Hz.")
-                    # Podría decidirse manejar este error de forma más estricta.
-            except Exception as e:
-                print(f"ADVERTENCIA: No se pudo leer el archivo RIR (aunque existe): {rir_filename}. Error: {e}")
-        else:
-            print(f"ADVERTENCIA: Archivo RIR no encontrado: {rir_filename}")
-
-    if not rirs:
-        print(f"ERROR: No se cargaron RIRs para la base: {base_filepath_template}. Verifique los nombres de archivo y la salida de simulation.py.")
-        return [], -1 # Devolver lista vacía y fs inválida si no se carga nada.
-
-    return rirs, fs_rir
-
-
-def process_configuration(base_filepath_template, num_mics_in_config, mic_distance=0.1):
-    """
-    Procesa una configuración completa de RIRs: carga RIRs, estima TDOAs y DOAs
-    entre pares consecutivos de micrófonos.
-    """
-    print(f"\nProcesando configuración basada en: {base_filepath_template}")
-    print(f"Esperando {num_mics_in_config} micrófonos para esta configuración.")
-
-    rirs, fs = load_rirs(base_filepath_template, num_mics_in_config)
-
-    if not rirs or fs == -1:
-        print(f"No se pudieron cargar RIRs o fs inválida para {base_filepath_template}. Abortando procesamiento para esta configuración.")
+def process_simulation_data():
+    print("--- main.py: Iniciando procesamiento de datos de simulación ---")
+    if not os.path.exists(METADATA_FILENAME):
+        print(f"Error: Archivo de metadatos no encontrado: {METADATA_FILENAME}")
         return
+    
+    metadata_df = pd.read_csv(METADATA_FILENAME)
+    print(f"Metadatos cargados: {len(metadata_df)} configuraciones encontradas.")
 
-    if len(rirs) < 2:
-        print(f"Se necesitan al menos 2 RIRs para estimar TDOA/DOA. Se cargaron {len(rirs)}. Abortando.")
+    anechoic_signal, fs_anechoic = load_signal_from_wav(ANECHOIC_SIGNAL_PATH, target_fs=48000)
+    if anechoic_signal is None:
+        print(f"Error: No se pudo cargar la señal anecoica de {ANECHOIC_SIGNAL_PATH}")
         return
+    print(f"Señal anecoica cargada: {ANECHOIC_SIGNAL_PATH} (Fs: {fs_anechoic} Hz)")
 
-    # Si se cargaron menos RIRs de las esperadas pero al menos 2, advertir pero continuar.
-    if len(rirs) < num_mics_in_config:
-        print(f"ADVERTENCIA: Se esperaban {num_mics_in_config} RIRs, pero solo se cargaron {len(rirs)}. Se procesarán los pares disponibles.")
+    all_experiment_results = []
+    tdoa_methods = ['cc', 'phat', 'scot', 'ml']
 
-    actual_num_mics_loaded = len(rirs)
+    for index, sim_params in metadata_df.iterrows():
+        print(f"\nProcesando Config ID: {sim_params['config_id']} ({index+1}/{len(metadata_df)})..." )
+        fs_sim = sim_params['fs_hz']
+        if fs_sim != fs_anechoic:
+            print(f"  Advertencia: Fs de simulación ({fs_sim}) no coincide con Fs anecoica ({fs_anechoic}). Saltando config.")
+            continue
 
-    print(f"RIRs cargadas exitosamente. Frecuencia de muestreo: {fs} Hz.")
+        # Cargar RIRs para esta configuración
+        mic_rirs = []
+        mic_positions_actual = []
+        valid_rirs_loaded = True
+        for i in range(int(sim_params['num_mics_in_array'])):
+            rir_path = os.path.join(RIR_DATASET_DIR, f"{sim_params['rir_file_basename']}_micidx_{i}.wav")
+            if os.path.exists(rir_path):
+                try:
+                    rir_data, _ = sf.read(rir_path)
+                    mic_rirs.append(rir_data)
+                    mic_positions_actual.append([sim_params[f'mic{i}_pos_x'], sim_params[f'mic{i}_pos_y'], sim_params[f'mic{i}_pos_z']])
+                except Exception as e:
+                    print(f"  Error cargando RIR {rir_path}: {e}. Saltando config.")
+                    valid_rirs_loaded = False; break
+            else:
+                print(f"  Error: RIR no encontrada: {rir_path}. Saltando config.")
+                valid_rirs_loaded = False; break
+        if not valid_rirs_loaded or len(mic_rirs) != sim_params['num_mics_in_array']:
+            continue
 
-    for i in range(actual_num_mics_loaded - 1):
-        # Asumimos que las RIRs son señales mono. Si son estéreo, tomar solo un canal.
-        sig1 = rirs[i]
-        if sig1.ndim > 1: sig1 = sig1[:, 0] # Tomar primer canal si es multicanal
+        # Convolución
+        reverberant_signals = [np.convolve(anechoic_signal, rir, mode='full') for rir in mic_rirs]
+        source_pos_actual = [sim_params['source_pos_x'], sim_params['source_pos_y'], sim_params['source_pos_z']]
+        real_doa_deg = sim_params['actual_azimuth_src_to_array_center_deg'] # Asumiendo que este es el DOA de referencia
 
-        sig2 = rirs[i+1]
-        if sig2.ndim > 1: sig2 = sig2[:, 0] # Tomar primer canal si es multicanal
+        for snr_db_val in SNRS_TO_TEST_DB:
+            # print(f"  Procesando SNR: {snr_db_val} dB")
+            noisy_signals = [add_noise_for_snr(sig, snr_db_val, fs_sim) for sig in reverberant_signals]
+            
+            # Pares de micrófonos y sus distancias (d)
+            # Asumimos array lineal en X, separación uniforme sim_params['mic_separation_m']
+            mic_sep = sim_params['mic_separation_m']
+            mic_pairs_info = [] # (idx1, idx2, distance_d, real_tdoa_for_pair)
+            for i in range(len(noisy_signals)):
+                for j in range(i + 1, len(noisy_signals)):
+                    # Solo considerar pares con separación conocida si es necesario, o todos
+                    # Para el array lineal de 4 mics, los pares relevantes son:
+                    # (0,1), (1,2), (2,3) con d=mic_sep
+                    # (0,2), (1,3) con d=2*mic_sep
+                    # (0,3) con d=3*mic_sep
+                    if abs(i-j) == 1: pair_d = mic_sep
+                    elif abs(i-j) == 2: pair_d = 2 * mic_sep
+                    elif abs(i-j) == 3: pair_d = 3 * mic_sep
+                    else: continue # O manejar otros pares si es necesario
 
-        print(f"\n  Calculando para par de micrófonos original: Mic {i} vs Mic {i+1}")
-        # (Nota: si algunos micrófonos intermedios no se cargaron, los índices 'i' y 'i+1'
-        # se refieren a los índices en la lista 'rirs' cargada, no necesariamente a los
-        # índices originales absolutos si hubo fallos de carga no consecutivos)
+                    real_tdoa_pair = calculate_real_tdoa(source_pos_actual, mic_positions_actual[i], mic_positions_actual[j])
+                    mic_pairs_info.append({'mic1_idx': i, 'mic2_idx': j, 'd': pair_d, 'real_tdoa': real_tdoa_pair})
 
-        # Estimación de TDOA
-        tdoa_cc_val = estimate_tdoa_cc(sig1, sig2, fs)
-        tdoa_phat_val = estimate_tdoa_gcc(sig1, sig2, fs, method='phat')
-        tdoa_scot_val = estimate_tdoa_gcc(sig1, sig2, fs, method='scot')
+            estimated_doas_for_array = {method: [] for method in tdoa_methods} # Para promediar DOAs de pares adyacentes
 
-        # Estimación de DOA
-        # Usamos la constante C importada o definida en doa.py por defecto.
-        doa_cc_val = estimate_doa_from_tdoa(tdoa_cc_val, d=mic_distance)
-        doa_phat_val = estimate_doa_from_tdoa(tdoa_phat_val, d=mic_distance)
-        doa_scot_val = estimate_doa_from_tdoa(tdoa_scot_val, d=mic_distance)
+            for pair_info in mic_pairs_info:
+                idx1, idx2, d_pair, real_tdoa_p = pair_info['mic1_idx'], pair_info['mic2_idx'], pair_info['d'], pair_info['real_tdoa']
+                sig_a, sig_b = noisy_signals[idx1], noisy_signals[idx2]
+                
+                result_entry_base = sim_params.to_dict() # Copia parámetros de simulación
+                result_entry_base.update({
+                    'snr_db': snr_db_val,
+                    'mic_pair': f"{idx1}-{idx2}",
+                    'mic_pair_distance_m': d_pair,
+                    'tdoa_real_s': real_tdoa_p
+                })
 
-        print(f"    TDOA CC:    {tdoa_cc_val*1e6:.2f} µs  | DOA: {doa_cc_val:.2f}°")
-        print(f"    TDOA PHAT:  {tdoa_phat_val*1e6:.2f} µs  | DOA: {doa_phat_val:.2f}°")
-        print(f"    TDOA SCOT:  {tdoa_scot_val*1e6:.2f} µs  | DOA: {doa_scot_val:.2f}°")
+                for tdoa_method_name in tdoa_methods:
+                    tdoa_val, comp_time = np.nan, np.nan
+                    if tdoa_method_name == 'cc':
+                        tdoa_val, comp_time = estimate_tdoa_cc(sig_a, sig_b, fs_sim)
+                    else: # phat, scot, ml
+                        tdoa_val, comp_time = estimate_tdoa_gcc(sig_a, sig_b, fs_sim, method=tdoa_method_name)
+                    
+                    tdoa_error_s = tdoa_val - real_tdoa_p if not np.isnan(tdoa_val) else np.nan
+                    doa_from_pair = estimate_doa_from_tdoa(tdoa_val, d_pair) # Usa C_SOUND por defecto
 
+                    current_pair_results = result_entry_base.copy()
+                    current_pair_results.update({
+                        'tdoa_method': tdoa_method_name,
+                        'tdoa_estimated_s': tdoa_val,
+                        'tdoa_error_s': tdoa_error_s,
+                        'tdoa_computation_time_s': comp_time,
+                        'doa_estimated_from_pair_deg': doa_from_pair
+                        # No calculamos error DOA por par aquí, sino para el array completo
+                    })
+                    all_experiment_results.append(current_pair_results)
+
+                    # Si es par adyacente, guardar su DOA para el promedio del array
+                    if abs(idx1-idx2) == 1 and not np.isnan(doa_from_pair):
+                        estimated_doas_for_array[tdoa_method_name].append(doa_from_pair)
+            
+            # Calcular DOA promedio del array para cada método TDOA base
+            for method_name, doas in estimated_doas_for_array.items():
+                if doas: # Si hay DOAs de pares adyacentes para promediar
+                    avg_doa_array = np.mean(doas)
+                    error_doa_array = avg_doa_array - real_doa_deg if not np.isnan(avg_doa_array) else np.nan
+                    # Guardar este resultado de DOA de array (podría ser una entrada separada o añadir a las existentes)
+                    # Para simplificar, añadimos una entrada por cada método TDOA que produjo un DOA de array
+                    array_doa_entry = sim_params.to_dict()
+                    array_doa_entry.update({
+                        'snr_db': snr_db_val,
+                        'mic_pair': 'array_avg_adj_pairs', # Indicador de que es un resultado de array
+                        'tdoa_method_for_avg_doa': method_name, # Qué TDOA se usó para los DOAs promediados
+                        'doa_array_estimated_deg': avg_doa_array,
+                        'doa_array_real_deg': real_doa_deg,
+                        'doa_array_error_deg': error_doa_array
+                    })
+                    all_experiment_results.append(array_doa_entry)
+
+    if all_experiment_results:
+        results_df = pd.DataFrame(all_experiment_results)
+        output_csv_path = "full_experiment_results.csv"
+        try:
+            results_df.to_csv(output_csv_path, index=False)
+            print(f"\nResultados ({len(results_df)} filas) guardados en: {output_csv_path}")
+        except Exception as e:
+            print(f"Error al guardar CSV: {e}")
+    else:
+        print("No se generaron resultados.")
+
+    print("--- main.py: Procesamiento finalizado ---")
 
 if __name__ == "__main__":
-    print("==============================================================")
-    print("Iniciando script de procesamiento de RIRs y estimación TDOA/DOA (main.py)")
-    print("==============================================================")
+    # Crear un archivo p336_007.wav dummy si no existe, para que el script corra
+    # En un entorno real, este archivo debe ser una señal anecoica real.
+    if not os.path.exists(ANECHOIC_SIGNAL_PATH):
+        print(f"Advertencia: Archivo anecoico {ANECHOIC_SIGNAL_PATH} no encontrado. Creando dummy.")
+        sf.write(ANECHOIC_SIGNAL_PATH, np.random.randn(48000 * 2), 48000) # 2 seg de ruido blanco
+    
+    # Crear un dummy metadata.csv si no existe para permitir que el script se ejecute
+    # En un entorno real, este archivo lo genera simulation.py
+    if not os.path.exists(METADATA_FILENAME):
+        print(f"Advertencia: Archivo de metadatos {METADATA_FILENAME} no encontrado. Creando dummy.")
+        dummy_meta_data = [{
+            'config_id': 'dummy_cfg1', 'fs_hz': 48000, 'room_dim_x': 5, 'room_dim_y': 4, 'room_dim_z': 3,
+            'rt60_target_s': 0.5, 'is_anechoic': False, 
+            'source_pos_x': 1, 'source_pos_y': 1, 'source_pos_z': 1.5,
+            'array_center_x': 2.5, 'array_center_y': 2, 'array_center_z': 1.5, 
+            'actual_dist_src_to_array_center_m': 2.0, 'actual_azimuth_src_to_array_center_deg': 45.0,
+            'num_mics_in_array': 2, 'mic_separation_m': 0.1, 'rir_file_basename': 'dummy_rir_cfg1',
+            'mic0_pos_x': 2.45, 'mic0_pos_y': 2, 'mic0_pos_z': 1.5,
+            'mic1_pos_x': 2.55, 'mic1_pos_y': 2, 'mic1_pos_z': 1.5
+        }]
+        # Crear directorio si no existe
+        os.makedirs(RIR_DATASET_DIR, exist_ok=True)
+        pd.DataFrame(dummy_meta_data).to_csv(METADATA_FILENAME, index=False)
+        # Crear dummy RIR files para el dummy metadata
+        # Esto es solo para que el script no falle por archivos faltantes en una ejecución de prueba inicial.
+        if not os.path.exists(os.path.join(RIR_DATASET_DIR, 'dummy_rir_cfg1_micidx_0.wav')):
+            sf.write(os.path.join(RIR_DATASET_DIR, 'dummy_rir_cfg1_micidx_0.wav'), np.random.randn(100), 48000)
+            sf.write(os.path.join(RIR_DATASET_DIR, 'dummy_rir_cfg1_micidx_1.wav'), np.random.randn(100), 48000)
 
-    # --- Configuración del Ejemplo de Procesamiento ---
-    # Este es el nombre BASE del archivo que simulation.py genera ANTES de añadir "_micidx_N.wav"
-    # El usuario debe asegurarse de que este nombre base y el número de micrófonos coincidan
-    # con una de las configuraciones generadas por simulation.py.
-
-    # Ejemplo basado en una de las configuraciones de simulation.py:
-    # Configuración original en simulation.py:
-    # {
-    #     "rt60_tgt": 0.5,
-    #     "room_dim": [6, 5, 3.0],
-    #     "source_pos": [1, 1, 1.5],
-    #     "mic_positions": [[5, 4, 1.5], [1.5, 4, 1.5], [3, 2.5, 2.0]], # Tres micrófonos
-    #     "filename_suffix": "config_3" # (o el default si no se provee)
-    # }
-    # El nombre de archivo base generado por simulation.py para esto sería:
-    # "rir_rt60_0.5_room_6x5x3.0_src_1x1x1.5_config_3.wav" (antes de añadir _micidx_N)
-
-    base_rir_filepath = "rir_dataset_user_defined/rir_rt60_0.5_room_6x5x3.0_src_1x1x1.5_config_3.wav"
-    number_of_microphones_in_this_config = 3
-    assumed_mic_distance_for_doa = 0.1 # Distancia entre micrófonos para el cálculo de DOA (ej. 10 cm)
-                                       # Esto es una simplificación si el array no es uniforme o lineal.
-                                       # La función estimate_doa_from_tdoa asume esta 'd' para el par.
-
-    # Verificar si el directorio de RIRs existe para dar un mejor feedback
-    rir_dir = os.path.dirname(base_rir_filepath)
-    if not os.path.exists(rir_dir):
-        print(f"ERROR: El directorio de RIRs '{rir_dir}' no existe.")
-        print("Por favor, ejecute simulation.py primero para generar las RIRs.")
-    else:
-        # Llamar a la función de procesamiento para la configuración de ejemplo
-        process_configuration(
-            base_filepath_template=base_rir_filepath,
-            num_mics_in_config=number_of_microphones_in_this_config,
-            mic_distance=assumed_mic_distance_for_doa
-        )
-
-    # Se podrían añadir más llamadas a process_configuration para otros conjuntos de RIRs.
-    # Por ejemplo, para la primera configuración de simulation.py (small_room_short_rt60_2mics):
-    # base_rir_filepath_2 = "rir_dataset_user_defined/rir_rt60_0.3_room_5x4x2.8_src_1.5x1.0x1.2_small_room_short_rt60_2mics.wav"
-    # number_of_microphones_2 = 2
-    # process_configuration(base_rir_filepath_2, number_of_microphones_2, assumed_mic_distance_for_doa)
-
-    print("\n==============================================================")
-    print("Procesamiento en main.py finalizado.")
-    print("==============================================================")
+    process_simulation_data()
