@@ -1,123 +1,10 @@
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
 import os
+from plotting_utils import create_error_plot
 
 RESULTS_CSV_PATH = "full_experiment_results.csv"
 PLOTS_DIR = "analysis_plots"
-
-def plot_error_vs_param(df, error_col, param_col, title, filename, 
-                        param_bins=10, is_angular_error=False, 
-                        error_label='Error (s or deg)', param_label='Parameter',
-                        ylim_percentiles=(0.5, 99.5)): # Ajustado para mostrar un poco más
-    """Función genérica para graficar error vs. un parámetro."""
-    if error_col not in df.columns or param_col not in df.columns:
-        print(f"Advertencia: Columnas {error_col} o {param_col} no encontradas. Saltando gráfico: {title}")
-        return
-
-    df_plot = df.dropna(subset=[error_col, param_col]).copy()
-    if df_plot.empty:
-        print(f"Advertencia: No hay datos para graficar para {title} después de dropna. Saltando.")
-        return
-
-    # Aplicar normalización y cálculo de error absoluto
-    if is_angular_error:
-        # Normalizar error angular a [-180, 180)
-        df_plot['error_normalized'] = (df_plot[error_col].astype(float) + 180) % 360 - 180
-        df_plot['error_abs'] = df_plot['error_normalized'].abs()
-    else:
-        df_plot['error_abs'] = df_plot[error_col].astype(float).abs()
-    
-    # Filtrar NaNs/Infs que puedan surgir de los cálculos anteriores
-    df_plot.replace([np.inf, -np.inf], np.nan, inplace=True)
-    df_plot.dropna(subset=['error_abs'], inplace=True)
-
-    if df_plot.empty:
-        print(f"Advertencia: No hay datos válidos para error_abs en {title} después de la limpieza. Saltando.")
-        return
-
-    plt.figure(figsize=(12, 7)) # Aumentado tamaño para mejor legibilidad
-
-    # Determinar límites del eje Y basados en percentiles del error absoluto
-    valid_errors_for_ylim = df_plot['error_abs'].dropna()
-    final_ylim_bottom, final_ylim_top = None, None
-
-    if not valid_errors_for_ylim.empty:
-        min_err_val = np.percentile(valid_errors_for_ylim, ylim_percentiles[0])
-        max_err_val = np.percentile(valid_errors_for_ylim, ylim_percentiles[1])
-
-        if min_err_val == max_err_val :
-            min_err_val = valid_errors_for_ylim.min()
-            max_err_val = valid_errors_for_ylim.max()
-            if min_err_val == max_err_val : # Si todos los valores son iguales
-                 max_err_val = min_err_val + 1.0 # Añadir un pequeño rango para visibilidad
-
-        margin = (max_err_val - min_err_val) * 0.05
-        if margin < 1e-9 and max_err_val > 1e-9 : margin = max_err_val * 0.05
-        elif margin < 1e-9 and min_err_val == 0 and max_err_val == 0 : margin = 0.1 # margen por defecto si todo es cero
-        elif margin < 1e-9 : margin = (min_err_val + max_err_val + 1e-9) * 0.05 # Evitar margen cero si no son cero
-
-
-        final_ylim_bottom = max(0, min_err_val - margin) # Error abs no debe ser < 0
-        final_ylim_top = max_err_val + margin
-
-        # Asegurar que top > bottom
-        if final_ylim_top <= final_ylim_bottom:
-            final_ylim_top = final_ylim_bottom + 0.1 # Pequeño offset si son iguales o invertidos
-
-    ax = plt.gca() # Obtener el eje actual para aplicar ylim después
-
-    param_col_binned = param_col + '_binned'
-    # Asegurar que la columna de parámetro sea numérica para pd.cut
-    if pd.api.types.is_numeric_dtype(df_plot[param_col]):
-        if df_plot[param_col].nunique() > param_bins * 1.5: # Umbral ajustado
-            try:
-                # Intentar crear bins con al menos algunos puntos
-                df_plot[param_col_binned] = pd.cut(df_plot[param_col], bins=param_bins)
-
-                # Verificar si todos los bins están vacíos o si hay muy pocos datos por bin
-                if df_plot[param_col_binned].nunique() > 0 :
-                    sns.boxplot(x=param_col_binned, y='error_abs', data=df_plot, showfliers=False, ax=ax, whis=[5, 95]) # whis ajustado
-                    plt.xticks(rotation=45, ha='right')
-                else: # Si pd.cut no produjo bins útiles (e.g. todos los valores son iguales)
-                    # print(f"  Info: pd.cut no produjo bins útiles para {param_col}. Usando scatter.")
-                    sns.scatterplot(x=param_col, y='error_abs', data=df_plot, alpha=0.3, s=15, ax=ax, edgecolor=None)
-            except Exception as e:
-                # print(f"  Advertencia: No se pudo hacer boxplot para {param_col} (error: {e}). Usando scatter.")
-                sns.scatterplot(x=param_col, y='error_abs', data=df_plot, alpha=0.3, s=15, ax=ax, edgecolor=None)
-        elif df_plot[param_col].nunique() > 0: # Pocos valores numéricos, usar boxplot directamente
-            sns.boxplot(x=param_col, y='error_abs', data=df_plot, showfliers=False, ax=ax, whis=[5, 95]) # whis ajustado
-            plt.xticks(rotation=45, ha='right')
-        else: # Un solo valor numérico o ninguno, usar scatter
-            sns.scatterplot(x=param_col, y='error_abs', data=df_plot, alpha=0.3, s=15, ax=ax, edgecolor=None)
-    else: # Columna de parámetro no numérica (categórica)
-        if df_plot[param_col].nunique() > 0: # Asegurarse que hay categorías para graficar
-            sns.boxplot(x=param_col, y='error_abs', data=df_plot, showfliers=False, ax=ax, whis=[5, 95]) # whis ajustado
-            plt.xticks(rotation=45, ha='right')
-        else:
-            # print(f"  Info: No hay categorías válidas para {param_col}. Usando scatter.")
-            sns.scatterplot(x=param_col, y='error_abs', data=df_plot, alpha=0.3, s=15, ax=ax, edgecolor=None)
-
-
-    plt.title(title, fontsize=14)
-    plt.xlabel(param_label if param_label else param_col, fontsize=12)
-    plt.ylabel(error_label, fontsize=12)
-    ax.grid(True, linestyle='--', alpha=0.6) # Estilo de grid mejorado
-
-    # Aplicar los límites Y calculados
-    if final_ylim_bottom is not None and final_ylim_top is not None:
-        ax.set_ylim(final_ylim_bottom, final_ylim_top)
-
-    plt.tight_layout()
-
-    try:
-        plt.savefig(os.path.join(PLOTS_DIR, filename), dpi=150) # Aumentar DPI para mejor calidad
-        print(f"Gráfico guardado: {filename}")
-    except Exception as e:
-        print(f"Error guardando gráfico {filename}: {e}")
-    plt.close()
-
 
 def analyze_and_plot(df):
     """Función principal para generar todos los análisis y plots."""
@@ -127,151 +14,76 @@ def analyze_and_plot(df):
 
     os.makedirs(PLOTS_DIR, exist_ok=True)
 
-    # Filtrar por tipo de resultado (TDOA por par vs DOA de array)
-    # Asegurarse que la columna 'mic_pair' existe
     if 'mic_pair' not in df.columns:
-        print("Error: La columna 'mic_pair' no se encuentra en el CSV. No se puede continuar.")
+        print("Error: La columna 'mic_pair' no se encuentra en el CSV.")
         return
 
     df_tdoa_pairs = df[df['mic_pair'] != 'array_avg_adj_pairs'].copy()
     df_doa_array = df[df['mic_pair'] == 'array_avg_adj_pairs'].copy()
 
-    # --- Análisis de TDOA --- 
-    tdoa_methods_present = []
+    # --- Ejemplo 1: TDOA Error (CC) vs SNR usando create_error_plot ---
+    method_cc_tdoa = 'cc'
     if 'tdoa_method' in df_tdoa_pairs.columns:
-        tdoa_methods_present = df_tdoa_pairs['tdoa_method'].unique()
-    else:
-        print("Advertencia: Columna 'tdoa_method' no encontrada en los datos de pares TDOA.")
+        df_method_cc_tdoa = df_tdoa_pairs[df_tdoa_pairs['tdoa_method'] == method_cc_tdoa].copy()
 
-    for method in tdoa_methods_present:
-        df_method = df_tdoa_pairs[df_tdoa_pairs['tdoa_method'] == method].copy()
-        error_col_tdoa = 'tdoa_error_s'
-        if error_col_tdoa not in df_method.columns:
-            print(f"Advertencia: {error_col_tdoa} no encontrado para el método {method}. Saltando plots TDOA.")
-            continue
-
-        plot_error_vs_param(df_method, error_col_tdoa, 'snr_db', 
-                            f'Error TDOA ({method.upper()}) vs. SNR', f'tdoa_error_{method}_vs_snr.png',
-                            param_label='SNR (dB)', error_label='Error Absoluto TDOA (s)')
-        plot_error_vs_param(df_method, error_col_tdoa, 'rt60_target_s', 
-                            f'Error TDOA ({method.upper()}) vs. RT60', f'tdoa_error_{method}_vs_rt60.png',
-                            param_label='RT60 Target (s)', error_label='Error Absoluto TDOA (s)')
-        plot_error_vs_param(df_method, error_col_tdoa, 'actual_dist_src_to_array_center_m', 
-                            f'Error TDOA ({method.upper()}) vs. Distancia Fuente-Array', f'tdoa_error_{method}_vs_dist.png',
-                            param_label='Distancia Fuente-Array (m)', error_label='Error Absoluto TDOA (s)')
-        plot_error_vs_param(df_method, error_col_tdoa, 'actual_azimuth_src_to_array_center_deg', 
-                            f'Error TDOA ({method.upper()}) vs. Azimut Real Fuente', f'tdoa_error_{method}_vs_azimuth.png',
-                            param_label='Azimut Real Fuente (deg)', error_label='Error Absoluto TDOA (s)')
-        plot_error_vs_param(df_method, error_col_tdoa, 'mic_pair_distance_m', 
-                            f'Error TDOA ({method.upper()}) vs. Separación Mic. Par', f'tdoa_error_{method}_vs_mic_sep.png',
-                            param_label='Separación Micrófonos del Par (m)', error_label='Error Absoluto TDOA (s)')
-
-    # Comparación de tiempos de cómputo TDOA
-    if not df_tdoa_pairs.empty and 'tdoa_method' in df_tdoa_pairs.columns and 'tdoa_computation_time_s' in df_tdoa_pairs.columns:
-        plt.figure(figsize=(10,6))
-        # For computation time, ylim based on its own distribution might be useful too
-        time_data = df_tdoa_pairs['tdoa_computation_time_s'].dropna()
-        if not time_data.empty:
-            y_min_time = np.percentile(time_data, 0.5)
-            y_max_time = np.percentile(time_data, 99.5)
-            margin_time = (y_max_time - y_min_time) * 0.05
-            if margin_time < 1e-9 : margin_time = (y_min_time + y_max_time + 1e-9) * 0.05
-
-            final_y_min_time = max(0, y_min_time - margin_time)
-            final_y_max_time = y_max_time + margin_time
-            if final_y_max_time <= final_y_min_time: final_y_max_time = final_y_min_time + 0.001 # small default if flat
-
-            plt.ylim(final_y_min_time, final_y_max_time)
-
-        sns.boxplot(x='tdoa_method', y='tdoa_computation_time_s', data=df_tdoa_pairs, showfliers=False, whis=[5,95])
-        plt.title('Tiempo de Cómputo por Método TDOA (Pctl 0.5-99.5 Y-axis)', fontsize=14)
-        plt.ylabel('Tiempo (s)', fontsize=12)
-        plt.xlabel('Método TDOA', fontsize=12)
-        plt.grid(True, linestyle='--', alpha=0.6)
-        plt.tight_layout()
-        plt.savefig(os.path.join(PLOTS_DIR, 'tdoa_computation_times.png'), dpi=150)
-        plt.close()
-        print("Gráfico guardado: tdoa_computation_times.png")
-    else:
-        print("Advertencia: No se pudo generar 'tdoa_computation_times.png' por falta de columnas o datos.")
-
-
-    # --- Análisis de DOA (Array) --- 
-    doa_base_methods = []
-    if 'tdoa_method_for_avg_doa' in df_doa_array.columns:
-        doa_base_methods = df_doa_array['tdoa_method_for_avg_doa'].unique()
-    else:
-        print("Advertencia: Columna 'tdoa_method_for_avg_doa' no encontrada en los datos de DOA de array.")
-
-    for base_method in doa_base_methods:
-        df_method_doa = df_doa_array[df_doa_array['tdoa_method_for_avg_doa'] == base_method].copy()
-        error_col_doa = 'doa_array_error_deg'
-        if error_col_doa not in df_method_doa.columns:
-            print(f"Advertencia: {error_col_doa} no encontrado para el método base {base_method}. Saltando plots DOA.")
-            continue
-
-        plot_error_vs_param(df_method_doa, error_col_doa, 'snr_db', 
-                            f'Error DOA Array (base {base_method.upper()}) vs. SNR', f'doa_array_error_{base_method}_vs_snr.png',
-                            param_label='SNR (dB)', error_label='Error Absoluto DOA (deg)', is_angular_error=True)
-        plot_error_vs_param(df_method_doa, error_col_doa, 'rt60_target_s', 
-                            f'Error DOA Array (base {base_method.upper()}) vs. RT60', f'doa_array_error_{base_method}_vs_rt60.png',
-                            param_label='RT60 Target (s)', error_label='Error Absoluto DOA (deg)', is_angular_error=True)
-        plot_error_vs_param(df_method_doa, error_col_doa, 'actual_dist_src_to_array_center_m', 
-                            f'Error DOA Array (base {base_method.upper()}) vs. Distancia Fuente-Array', f'doa_array_error_{base_method}_vs_dist.png',
-                            param_label='Distancia Fuente-Array (m)', error_label='Error Absoluto DOA (deg)', is_angular_error=True)
-        plot_error_vs_param(df_method_doa, error_col_doa, 'actual_azimuth_src_to_array_center_deg', 
-                            f'Error DOA Array (base {base_method.upper()}) vs. Azimut Real Fuente', f'doa_array_error_{base_method}_vs_azimuth.png',
-                            param_label='Azimut Real Fuente (deg)', error_label='Error Absoluto DOA (deg)', is_angular_error=True)
-
-    # --- Otros Análisis --- 
-    # Ejemplo: Anecoica vs Reverberante para PHAT (TDOA)
-    # Comprobar que las columnas necesarias existen
-    required_cols_anechoic_plot = ['tdoa_method', 'tdoa_error_s', 'is_anechoic']
-    if all(col in df_tdoa_pairs.columns for col in required_cols_anechoic_plot):
-        df_phat_tdoa = df_tdoa_pairs[df_tdoa_pairs['tdoa_method'] == 'phat'].copy()
-        if not df_phat_tdoa.empty:
-            # Aplicar la misma lógica de normalización y abs que en plot_error_vs_param
-            df_phat_tdoa['error_abs'] = df_phat_tdoa['tdoa_error_s'].astype(float).abs()
-            df_phat_tdoa.replace([np.inf, -np.inf], np.nan, inplace=True)
-            df_phat_tdoa.dropna(subset=['error_abs', 'is_anechoic'], inplace=True)
-
-            if not df_phat_tdoa.empty:
-                plt.figure(figsize=(8,6))
-                ax_phat = sns.boxplot(x='is_anechoic', y='error_abs', data=df_phat_tdoa, showfliers=False, whis=[5,95])
-
-                # Calcular y aplicar ylim para este plot específico
-                valid_errors_phat = df_phat_tdoa['error_abs'].dropna()
-                if not valid_errors_phat.empty:
-                    min_err_phat = np.percentile(valid_errors_phat, 0.5)
-                    max_err_phat = np.percentile(valid_errors_phat, 99.5)
-                    margin_phat = (max_err_phat - min_err_phat) * 0.05
-                    if margin_phat < 1e-9 : margin_phat = (min_err_phat + max_err_phat + 1e-9) * 0.05
-
-                    ylim_bottom_phat = max(0, min_err_phat - margin_phat)
-                    ylim_top_phat = max_err_phat + margin_phat
-                    if ylim_top_phat <= ylim_bottom_phat: ylim_top_phat = ylim_bottom_phat + 0.1
-                    ax_phat.set_ylim(ylim_bottom_phat, ylim_top_phat)
-
-                plt.title('Error TDOA (PHAT) Anecoicas vs. Reverberantes (Pctl 0.5-99.5 Y-axis)', fontsize=14)
-                plt.xlabel('Es Anecoica', fontsize=12)
-                plt.ylabel('Error Absoluto TDOA (s)', fontsize=12)
-                plt.xticks([False, True], ['Reverberante', 'Anecoica'])
-                plt.grid(True, linestyle='--', alpha=0.6)
-                plt.tight_layout()
-                plt.savefig(os.path.join(PLOTS_DIR, 'tdoa_phat_error_anechoic_vs_reverb.png'), dpi=150)
-                plt.close()
-                print("Gráfico guardado: tdoa_phat_error_anechoic_vs_reverb.png")
-            else:
-                print("Advertencia: No hay datos PHAT válidos para el gráfico anecoico vs reverberante.")
+        if not df_method_cc_tdoa.empty:
+            print(f"\nGenerando gráfico para TDOA method {method_cc_tdoa} vs SNR...")
+            create_error_plot(
+                df_full=df_method_cc_tdoa,
+                x_col='snr_db',
+                y_col='tdoa_error_s',
+                title=f'Error TDOA ({method_cc_tdoa.upper()}) vs. SNR',
+                output_filename=f'tdoa_error_{method_cc_tdoa}_vs_snr.png',
+                plot_type='lineplot_ci',
+                hue_col=None,
+                is_angular_error=False,
+                ylim_strategy='percentile',
+                ylim_params={'low': 1, 'high': 99, 'min_range_abs': 0.00005}, # 50 µs
+                x_label='SNR (dB)',
+                y_label='Error Absoluto TDOA (s)',
+                output_dir=PLOTS_DIR,
+                lineplot_estimator='median',
+                lineplot_ci=95
+            )
         else:
-            print("Advertencia: No hay datos del método PHAT para el gráfico anecoico vs reverberante.")
+            print(f"No hay datos para TDOA method {method_cc_tdoa} para graficar vs SNR.")
     else:
-        print(f"Advertencia: Faltan columnas para el gráfico anecoico vs reverberante. Requeridas: {required_cols_anechoic_plot}")
+        print("Advertencia: Columna 'tdoa_method' no encontrada en df_tdoa_pairs.")
 
-    print("--- analyze_results.py: Análisis completado ---")
+    # --- Ejemplo 2: DOA Array Error (base CC) vs SNR usando create_error_plot ---
+    method_cc_doa = 'cc'
+    if 'tdoa_method_for_avg_doa' in df_doa_array.columns:
+        df_method_cc_doa = df_doa_array[df_doa_array['tdoa_method_for_avg_doa'] == method_cc_doa].copy()
+
+        if not df_method_cc_doa.empty:
+            print(f"\nGenerando gráfico para DOA Array (base {method_cc_doa}) vs SNR...")
+            create_error_plot(
+                df_full=df_method_cc_doa,
+                x_col='snr_db',
+                y_col='doa_array_error_deg',
+                title=f'Error DOA Array (base {method_cc_doa.upper()}) vs. SNR',
+                output_filename=f'doa_array_error_{method_cc_doa}_vs_snr.png',
+                plot_type='lineplot_ci',
+                is_angular_error=True,
+                ylim_strategy='percentile',
+                ylim_params={'low': 1, 'high': 99, 'min_range_abs': 5}, # 5 grados
+                x_label='SNR (dB)',
+                y_label='Error Absoluto DOA (grados)',
+                output_dir=PLOTS_DIR,
+                lineplot_estimator='median',
+                lineplot_ci=95
+            )
+        else:
+            print(f"No hay datos para DOA Array (base {method_cc_doa}) para graficar vs SNR.")
+    else:
+        print("Advertencia: Columna 'tdoa_method_for_avg_doa' no encontrada en df_doa_array.")
+
+    print(f"\n--- Gráficos de ejemplo generados en {PLOTS_DIR} (si los datos lo permitieron) ---")
+    print("Por favor, revisa tdoa_error_cc_vs_snr.png y doa_array_error_cc_vs_snr.png.")
+    print("El resto de los gráficos de la función original no se generarán en este paso.")
 
 if __name__ == "__main__":
-    print("--- Iniciando script de análisis de resultados ---")
+    print("--- Iniciando script de análisis de resultados (versión de prueba para ejemplos) ---")
     if not os.path.exists(RESULTS_CSV_PATH):
         print(f"Error: Archivo de resultados no encontrado: {RESULTS_CSV_PATH}. Ejecute main.py primero.")
     else:
