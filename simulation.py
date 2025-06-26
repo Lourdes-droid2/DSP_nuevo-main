@@ -89,14 +89,13 @@ if __name__ == "__main__":
     # Definiciones de escenarios según solicitud del usuario
     room_definitions = {
         "5x5x5": {"dims": [5.0, 5.0, 5.0], "src_pos": [1.25, 1.25, 2.5], "array_center": [2.5, 2.5, 2.5]},
-        "10x10x10": {"dims": [10.0, 10.0, 10.0], "src_pos": [2.5, 2.5, 5.0], "array_center": [5.0, 5.0, 5.0]},
     }
     rt60_definitions = {
         "anechoic": {"rt60_tgt": 0.05, "is_anechoic": True, "suffix": "anec"},
         "medium_reverb": {"rt60_tgt": 0.5, "is_anechoic": False, "suffix": "medrev"},
         "high_reverb": {"rt60_tgt": 1.0, "is_anechoic": False, "suffix": "highrev"},
     }
-    mic_counts_definitions = [4, 8]
+    mic_counts_definitions = [4]
 
     systematic_simulations = []
     for room_key, room_props in room_definitions.items():

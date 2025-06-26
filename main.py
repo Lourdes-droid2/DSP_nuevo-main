@@ -190,20 +190,11 @@ def process_simulation_data():
 
 if __name__ == "__main__":
     if not os.path.exists(ANECHOIC_SIGNAL_PATH):
-        print(f"Advertencia: Archivo anecoico {ANECHOIC_SIGNAL_PATH} no encontrado. Creando dummy.")
-        sf.write(ANECHOIC_SIGNAL_PATH, np.random.randn(48000 * 2), 48000)
+        raise ValueError(f"Archivo anecoico {ANECHOIC_SIGNAL_PATH} no encontrado. Por favor, asegúrate de que el archivo existe en el directorio actual.")
+        #print(f"Advertencia: Archivo anecoico {ANECHOIC_SIGNAL_PATH} no encontrado.")
 
     if not os.path.exists(METADATA_FILENAME):
-        print(f"Advertencia: Archivo de metadatos {METADATA_FILENAME} no encontrado. Creando dummy.")
-        os.makedirs(RIR_DATASET_DIR, exist_ok=True)
-        dummy_meta_data = [{'config_id': 'dummy_cfg1', 'fs_hz': 48000, 'room_dim_x': 5, 'room_dim_y': 4, 'room_dim_z': 3,
-            'rt60_target_s': 0.5, 'is_anechoic': False, 'source_pos_x': 1, 'source_pos_y': 1, 'source_pos_z': 1.5,
-            'array_center_x': 2.5, 'array_center_y': 2, 'array_center_z': 1.5,
-            'actual_dist_src_to_array_center_m': 2.0, 'actual_azimuth_src_to_array_center_deg': 45.0,
-            'num_mics_processed': 2, 'num_mics_configured':2, 'mic_separation_m': 0.1, 'rir_file_basename': 'dummy_rir_cfg1', # Cambiado num_mics_in_array
-            'mic0_pos_x': 2.45, 'mic0_pos_y': 2, 'mic0_pos_z': 1.5, 'mic1_pos_x': 2.55, 'mic1_pos_y': 2, 'mic1_pos_z': 1.5}]
-        pd.DataFrame(dummy_meta_data).to_csv(METADATA_FILENAME, index=False)
-        if not os.path.exists(os.path.join(RIR_DATASET_DIR, 'dummy_rir_cfg1_micidx_0.wav')):
-            sf.write(os.path.join(RIR_DATASET_DIR, 'dummy_rir_cfg1_micidx_0.wav'), np.random.randn(100), 48000)
-            sf.write(os.path.join(RIR_DATASET_DIR, 'dummy_rir_cfg1_micidx_1.wav'), np.random.randn(100), 48000)
+        raise ValueError(f"Archivo de metadatos {METADATA_FILENAME} no encontrado. Por favor, asegúrate de que el archivo existe en el directorio {RIR_DATASET_DIR}.")
+        #print(f"Advertencia: Archivo de metadatos {METADATA_FILENAME} no encontrado. Creando dummy.")
+
     process_simulation_data()
