@@ -6,11 +6,16 @@ import random
 import csv
 
 def calculate_angle_and_distance(source_pos, array_center):
-    """Calculates distance and azimuth from source to array center."""
+    """Calculates distance, azimuth, and elevation from source to array center."""
     delta = np.array(source_pos) - np.array(array_center)
     distance = np.linalg.norm(delta)
-    azimuth = np.degrees(np.arctan2(delta[1], delta[0])) # Azimuth in XY plane
-    return distance, azimuth
+    # Azimuth in XY plane (angle from X-axis towards Y-axis)
+    azimuth = np.degrees(np.arctan2(delta[1], delta[0]))
+    # Elevation is the angle with respect to the XY plane
+    # Positive elevation towards +Z
+    xy_distance = np.linalg.norm(delta[:2]) # Magnitude in XY plane
+    elevation = np.degrees(np.arctan2(delta[2], xy_distance))
+    return distance, azimuth, elevation
 
 def create_rir_example(base_output_filename_prefix, rt60_tgt, room_dim, source_pos, mic_positions, fs, is_anechoic=False):
     """
@@ -200,10 +205,11 @@ if __name__ == "__main__":
             continue
 
         total_rirs_generated_overall += rirs_created_for_config; successful_configurations_count +=1
-        actual_array_center_coords = []; dist_src_actual_val, azimuth_src_actual_val = "N/A", "N/A"
+        actual_array_center_coords = []
+        dist_src_actual_val, azimuth_src_actual_val, elevation_src_actual_val = "N/A", "N/A", "N/A"
         if mic_positions_used_by_pra: # Debería ser true si rirs_created_for_config > 0
             actual_array_center_coords = list(np.mean(mic_positions_used_by_pra, axis=0))
-            dist_src_actual_val, azimuth_src_actual_val = calculate_angle_and_distance(source_pos_current, actual_array_center_coords)
+            dist_src_actual_val, azimuth_src_actual_val, elevation_src_actual_val = calculate_angle_and_distance(source_pos_current, actual_array_center_coords)
 
         entry = {"config_id": config_id_str_current, "fs_hz": FS,
             "room_dim_x": room_dim_current[0], "room_dim_y": room_dim_current[1], "room_dim_z": room_dim_current[2],
@@ -213,10 +219,21 @@ if __name__ == "__main__":
             "array_orientation_axis": orientation_current, "num_mics_configured": NUM_MICS, "num_mics_processed": rirs_created_for_config,
             "mic_separation_m": MIC_SEPARATION, "rir_file_basename": os.path.basename(rir_base_filename_prefix)}
         if actual_array_center_coords: # Solo añadir si se calcularon
-            entry.update({"array_center_x_actual": round(actual_array_center_coords[0],2), "array_center_y_actual": round(actual_array_center_coords[1],2), "array_center_z_actual": round(actual_array_center_coords[2],2),
-                          "actual_dist_src_to_array_center_m": round(dist_src_actual_val,3), "actual_azimuth_src_to_array_center_deg": round(azimuth_src_actual_val,2)})
-        else: entry.update({"array_center_x_actual": "N/A", "array_center_y_actual": "N/A", "array_center_z_actual": "N/A",
-                           "actual_dist_src_to_array_center_m": "N/A", "actual_azimuth_src_to_array_center_deg": "N/A"})
+            entry.update({
+                "array_center_x_actual": round(actual_array_center_coords[0],2),
+                "array_center_y_actual": round(actual_array_center_coords[1],2),
+                "array_center_z_actual": round(actual_array_center_coords[2],2),
+                "actual_dist_src_to_array_center_m": round(dist_src_actual_val,3),
+                "actual_azimuth_src_to_array_center_deg": round(azimuth_src_actual_val,2),
+                "actual_elevation_src_to_array_center_deg": round(elevation_src_actual_val, 2) # Added elevation
+            })
+        else:
+            entry.update({
+                "array_center_x_actual": "N/A", "array_center_y_actual": "N/A", "array_center_z_actual": "N/A",
+                "actual_dist_src_to_array_center_m": "N/A",
+                "actual_azimuth_src_to_array_center_deg": "N/A",
+                "actual_elevation_src_to_array_center_deg": "N/A" # Added elevation
+            })
         for i_mic_meta, mic_c_meta in enumerate(mic_positions_used_by_pra): # Usar mic_positions_used_by_pra que son las reales
             entry.update({f"mic{i_mic_meta}_pos_x": round(mic_c_meta[0],2), f"mic{i_mic_meta}_pos_y": round(mic_c_meta[1],2), f"mic{i_mic_meta}_pos_z": round(mic_c_meta[2],2)})
         all_metadata_entries.append(entry)
@@ -228,7 +245,8 @@ if __name__ == "__main__":
         ordered_base_fieldnames = ["config_id", "fs_hz", "room_dim_x", "room_dim_y", "room_dim_z", "rt60_target_s", "is_anechoic",
             "source_pos_x", "source_pos_y", "source_pos_z", "array_center_x_config", "array_center_y_config", "array_center_z_config",
             "array_center_x_actual", "array_center_y_actual", "array_center_z_actual", "array_orientation_axis",
-            "actual_dist_src_to_array_center_m", "actual_azimuth_src_to_array_center_deg", "num_mics_configured",
+            "actual_dist_src_to_array_center_m", "actual_azimuth_src_to_array_center_deg",
+            "actual_elevation_src_to_array_center_deg", "num_mics_configured", # Added elevation
             "num_mics_processed", "mic_separation_m", "rir_file_basename"]
 
         mic_coord_fieldnames = []
